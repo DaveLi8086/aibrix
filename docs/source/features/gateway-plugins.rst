@@ -149,6 +149,7 @@ Routing Strategies
 
 Below are routing strategies gateway supports:
 
+* ``pipeline``: routes request by applying multiple strategies as an ordered pipeline of stages.
 * ``random``: routes request to a random pod.
 * ``least-request``: routes request to a pod with the fewest ongoing requests.
 * ``throughput``: routes request to a pod which has processed the lowest total weighted tokens.
@@ -169,6 +170,32 @@ Below are routing strategies gateway supports:
         "messages": [{"role": "user", "content": "Say this is a test!"}],
         "temperature": 0.7
     }'
+
+Pipeline routing example (multi-strategy):
+
+.. code-block:: bash
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "routing-strategy: pipeline" \
+    -H "routing-strategies: prefix-cache, least-request, random" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Say this is a test!"}],
+        "temperature": 0.7
+    }'
+
+Notes:
+  - Pipeline is enabled only when ``routing-strategy: pipeline`` is explicitly set.
+  - Each stage transforms the candidate pod set: ``S0 = ready pods``; ``Si = apply(stage_i, S{i-1})``.
+  - Unknown stages are ignored. If ``routing-strategies`` is empty, it defaults to ``random``.
+
+Unit tests:
+
+.. code-block:: bash
+
+    go test ./pkg/plugins/gateway/algorithms -run TestPipelineRouter -count=1
+    go test ./pkg/plugins/gateway -run Test_handleRequestHeaders -count=1
 
 
 * ``pd``: routes request for prefill-decode disaggregation, splitting processing between prefill and decode pods for optimized performance.

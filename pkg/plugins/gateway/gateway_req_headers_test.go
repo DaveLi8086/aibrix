@@ -167,6 +167,86 @@ func Test_handleRequestHeaders(t *testing.T) {
 				assert.Equal(t, tt.expected.rpm, rpm)
 			},
 		},
+		{
+			name: "pipeline strategy should parse routing-strategies header",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      userKey,
+					RawValue: []byte(""),
+				},
+				{
+					Key:      pathKey,
+					RawValue: []byte("test-path"),
+				},
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("pipeline"),
+				},
+				{
+					Key:      HeaderRoutingStrategies,
+					RawValue: []byte("prefix-cache, least-request, random"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{ReqPath: "test-path"},
+				user:       utils.User{},
+				rpm:        0,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.headers, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders())
+				assert.Equal(t, tt.expected.user, user)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, tt.expected.routingCtx.ReqPath, routingCtx.ReqPath)
+				assert.Equal(t, routingalgorithms.RouterPipeline, routingCtx.Algorithm)
+				assert.Equal(t, []string{"prefix-cache", "least-request", "random"}, routingCtx.StrategyPipeline)
+				assert.Equal(t, tt.expected.rpm, rpm)
+			},
+		},
+		{
+			name: "non-pipeline strategy should ignore routing-strategies header",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      userKey,
+					RawValue: []byte(""),
+				},
+				{
+					Key:      pathKey,
+					RawValue: []byte("test-path"),
+				},
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("random"),
+				},
+				{
+					Key:      HeaderRoutingStrategies,
+					RawValue: []byte("least-request"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{ReqPath: "test-path"},
+				user:       utils.User{},
+				rpm:        0,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.headers, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders())
+				assert.Equal(t, tt.expected.user, user)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, tt.expected.routingCtx.ReqPath, routingCtx.ReqPath)
+				assert.Equal(t, routingalgorithms.RouterRandom, routingCtx.Algorithm)
+				assert.Nil(t, routingCtx.StrategyPipeline)
+				assert.Equal(t, tt.expected.rpm, rpm)
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -28,7 +28,8 @@ import (
 )
 
 const (
-	RouterNotSet = ""
+	RouterNotSet                          = ""
+	RouterPipeline types.RoutingAlgorithm = "pipeline"
 )
 
 var (
@@ -66,6 +67,10 @@ func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bo
 }
 func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 	return defaultRM.Validate(algorithms)
+}
+
+func init() {
+	Register(RouterPipeline, NewPipelineRouter)
 }
 
 // Select the user provided router provider supported by gateway, no error reported and fallback to random router

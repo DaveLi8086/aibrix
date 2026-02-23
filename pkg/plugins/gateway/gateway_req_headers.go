@@ -46,6 +46,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	var err error
 	var errRes *extProcPb.ProcessingResponse
 	var routingCtx *types.RoutingContext
+	var routingStrategiesRaw string
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	reqHeaders := map[string]string{}
@@ -57,6 +58,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			requestPath = string(n.RawValue)
 		case authorizationKey:
 			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderRoutingStrategies:
+			routingStrategiesRaw = string(n.RawValue)
 		case HeaderExternalFilter:
 			reqHeaders[n.Key] = string(n.RawValue)
 		case contentTypeKey:
@@ -98,6 +101,16 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	routingCtx.ReqPath = requestPath
 	routingCtx.ReqHeaders = reqHeaders
 
+	// Parse routing-strategies only when pipeline is explicitly selected.
+	// This keeps all legacy single-strategy behavior unchanged.
+	if routingAlgorithm == routing.RouterPipeline {
+		pipeline := parseRoutingStrategies(routingStrategiesRaw)
+		if len(pipeline) == 0 {
+			pipeline = []string{string(routing.RouterRandom)}
+		}
+		routingCtx.StrategyPipeline = pipeline
+	}
+
 	headers := []*configPb.HeaderValueOption{}
 	headers = append(headers, &configPb.HeaderValueOption{
 		Header: &configPb.HeaderValue{
@@ -123,4 +136,21 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			},
 		},
 	}, user, rpm, routingCtx
+}
+
+func parseRoutingStrategies(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }

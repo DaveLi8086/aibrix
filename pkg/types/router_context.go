@@ -48,17 +48,20 @@ type RoutingAlgorithm string
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
-	Algorithm      RoutingAlgorithm
-	Model          string
-	Stream         bool
-	Message        string
-	RequestID      string
-	User           *string
-	RequestTime    time.Time // Time when the routing context is created.
-	RequestEndTime time.Time // Time when the routing is done and sent to inference engine.
-	PendingLoad    float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
-	TraceTerm      int64     // Trace term identifier, available after AddRequestCount call.
-	RoutedTime     time.Time // Time consumed during routing.
+	Algorithm RoutingAlgorithm
+	// StrategyPipeline carries the ordered list of routing strategies when Algorithm is "pipeline".
+	// It is request-scoped and should be reset when the context is returned to the pool.
+	StrategyPipeline []string
+	Model            string
+	Stream           bool
+	Message          string
+	RequestID        string
+	User             *string
+	RequestTime      time.Time // Time when the routing context is created.
+	RequestEndTime   time.Time // Time when the routing is done and sent to inference engine.
+	PendingLoad      float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
+	TraceTerm        int64     // Trace term identifier, available after AddRequestCount call.
+	RoutedTime       time.Time // Time consumed during routing.
 
 	ReqHeaders map[string]string
 	ReqBody    []byte
@@ -290,6 +293,7 @@ func (r *RoutingContext) getError() (err error) {
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
+	r.StrategyPipeline = nil
 	r.Model = model
 	r.Stream = false
 	r.Message = message

@@ -22,6 +22,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 const RouterRandom types.RoutingAlgorithm = "random"
@@ -40,6 +41,19 @@ type randomRouter struct {
 
 func NewRandomRouter() (types.Router, error) {
 	return randomRouter{}, nil
+}
+
+// RandomSelectAsList selects a random pod and returns it as a single-element PodList.
+// It is a side-effect-free helper used by the pipeline router.
+func RandomSelectAsList(pods types.PodList) (types.PodList, error) {
+	targetPod, err := utils.SelectRandomPod(pods.All(), rand.Intn)
+	if err != nil {
+		return nil, fmt.Errorf("random selection failed: %w", err)
+	}
+	if targetPod == nil {
+		return &utils.PodArray{Pods: []*v1.Pod{}}, nil
+	}
+	return &utils.PodArray{Pods: []*v1.Pod{targetPod}}, nil
 }
 
 func (r randomRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {

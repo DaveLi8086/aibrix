@@ -47,6 +47,7 @@ const (
 	HeaderWentIntoReqHeaders = "x-went-into-req-headers"
 	HeaderTargetPod          = "target-pod"
 	HeaderRoutingStrategy    = "routing-strategy"
+	HeaderRoutingStrategies  = "routing-strategies"
 	HeaderRequestID          = "request-id"
 	HeaderModel              = "model"
 	HeaderExternalFilter     = "external-filter"

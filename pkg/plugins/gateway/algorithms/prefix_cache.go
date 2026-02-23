@@ -443,6 +443,84 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	return ctx.TargetAddress(), nil
 }
 
+// PrefixCacheSelectAsList applies prefix-cache routing logic and returns a candidate PodList.
+//
+// Pipeline semantics require each stage to transform the candidate set; therefore this helper
+// exposes prefix-cache as a stage that can narrow (or reorder) candidates.
+//
+// Note: this helper does not mutate the prefix cache indexer (i.e. it does not call AddPrefix).
+// The caller (pipeline router) is responsible for updating cache after the final target is chosen.
+func PrefixCacheSelectAsList(p *prefixCacheRouter, ctx *types.RoutingContext, readyPodList types.PodList) (types.PodList, []uint64, error) {
+	if p == nil {
+		return &utils.PodArray{Pods: []*v1.Pod{}}, nil, errors.New("prefix cache router not initialized")
+	}
+	if p.kvSyncRouter != nil {
+		// Keep behavior safe: pipeline does not support composing kv-sync prefix-cache.
+		return &utils.PodArray{Pods: []*v1.Pod{}}, nil, errors.New("prefix cache pipeline does not support kv-sync mode")
+	}
+
+	// Use helper method to get the appropriate tokenizer
+	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return &utils.PodArray{Pods: []*v1.Pod{}}, nil, err
+	}
+
+	readyPods := readyPodList.All()
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range readyPods {
+		readyPodsMap[pod.Name] = struct{}{}
+	}
+
+	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.cache, readyPods)
+	if isLoadImbalanced {
+		if len(leastReqPodList) == 0 {
+			return &utils.PodArray{Pods: []*v1.Pod{}}, nil, errors.New("no target pod found when load imbalanced")
+		}
+		readyPodsMap = map[string]struct{}{}
+		for _, pod := range leastReqPodList {
+			readyPodsMap[pod.Name] = struct{}{}
+		}
+	}
+
+	matchedPods, prefixHashes := p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+
+	// If any prefix match exists, keep only best-match pods; then apply a least-load tie-break.
+	if len(matchedPods) > 0 {
+		maxMatch := 0
+		for _, m := range matchedPods {
+			if m > maxMatch {
+				maxMatch = m
+			}
+		}
+
+		podRequestCount := getRequestCounts(p.cache, readyPods)
+		minReq := math.MaxInt32
+		for podName, match := range matchedPods {
+			if match != maxMatch {
+				continue
+			}
+			if podRequestCount[podName] < minReq {
+				minReq = podRequestCount[podName]
+			}
+		}
+
+		candidates := make([]*v1.Pod, 0, len(matchedPods))
+		for _, pod := range readyPods {
+			if matchedPods[pod.Name] == maxMatch && podRequestCount[pod.Name] == minReq {
+				candidates = append(candidates, pod)
+			}
+		}
+		if len(candidates) > 0 {
+			return &utils.PodArray{Pods: candidates}, prefixHashes, nil
+		}
+	}
+
+	// Fallback to least-request candidates.
+	least, _ := LeastRequestSelectAsList(p.cache, &utils.PodArray{Pods: readyPods})
+	return least, prefixHashes, nil
+}
+
 // Cleanup gracefully shuts down the TokenizerPool if it exists
 func (p *prefixCacheRouter) Cleanup() error {
 	if p.tokenizerPool != nil {

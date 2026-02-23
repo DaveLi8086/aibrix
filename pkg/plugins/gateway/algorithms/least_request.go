@@ -96,6 +96,31 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 	}
 }
 
+// LeastRequestSelectAsList returns all pods with the lowest running request count.
+// It is a side-effect-free helper used by the pipeline router.
+func LeastRequestSelectAsList(c cache.Cache, pods types.PodList) (types.PodList, error) {
+	readyPods := pods.All()
+	if len(readyPods) == 0 {
+		return &utils.PodArray{Pods: []*v1.Pod{}}, nil
+	}
+
+	minCount := math.MaxInt32
+	podRequestCount := getRequestCounts(c, readyPods)
+	for _, totalReq := range podRequestCount {
+		if totalReq < minCount {
+			minCount = totalReq
+		}
+	}
+
+	candidates := make([]*v1.Pod, 0, len(readyPods))
+	for _, pod := range readyPods {
+		if podRequestCount[pod.Name] == minCount {
+			candidates = append(candidates, pod)
+		}
+	}
+	return &utils.PodArray{Pods: candidates}, nil
+}
+
 func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
 	var targetPod *v1.Pod
 	targetPods := []string{}
