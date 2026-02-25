@@ -115,7 +115,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				"error on selecting target pod", ErrorCodeServiceUnavailable, ""), model, routingCtx, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
-			HeaderRoutingStrategy, string(routingAlgorithm),
+			HeaderRoutingStrategy, string(routingCtx.Algorithm),
 			HeaderTargetPod, targetPodIP,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
 			"X-Request-Id", routingCtx.RequestID)

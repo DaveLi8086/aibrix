@@ -65,6 +65,11 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	}
 
 	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
+	if strings.Contains(routingStrategy, ",") {
+		// Preserve the original, unmodified header value for composite routing parsing.
+		reqHeaders[HeaderRoutingStrategy] = routingStrategy
+		routingStrategy = string(routing.RouterComposite)
+	}
 	routingAlgorithm, ok := routing.Validate(routingStrategy)
 	if routingStrategyEnabled && !ok {
 		klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", routingStrategy)

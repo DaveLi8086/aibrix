@@ -23,6 +23,16 @@ type Router interface {
 	Route(ctx *RoutingContext, readyPodList PodList) (string, error)
 }
 
+// RouterList defines the interface for routers that can filter pods.
+// It is used by composite routing to narrow down candidates before final routing.
+type RouterList interface {
+	Router
+
+	// Filter returns a subset of pods for subsequent routing stages.
+	// Returning an empty PodList indicates no suitable candidates.
+	Filter(ctx *RoutingContext, readyPodList PodList) (PodList, error)
+}
+
 // QueueRouter defines the interface for routers that contains built-in queue and
 // offers queue status query.
 type QueueRouter interface {
