@@ -42,6 +42,22 @@ type leastRequestRouter struct {
 	cache cache.Cache
 }
 
+// Filter returns all candidate pods with the least running request count.
+// It is intended for strategy chain use where least-request appears before the final routing stage.
+// Note: multi-port (DP-level) routing is not handled here; it will be resolved by Route() when used as the final stage.
+func (r *leastRequestRouter) Filter(_ *types.RoutingContext, readyPodList types.PodList) (types.PodList, error) {
+	readyPods := readyPodList.All()
+	if len(readyPods) == 0 {
+		return &utils.PodArray{Pods: []*v1.Pod{}}, nil
+	}
+	if isMultiPortPods(readyPods) {
+		// Skip filtering for DP-level routing to avoid (pod,port) candidate expansion.
+		return readyPodList, nil
+	}
+	filtered := filterPodsWithLeastRequestCount(r.cache, readyPods)
+	return &utils.PodArray{Pods: filtered}, nil
+}
+
 func NewLeastRequestRouter() (types.Router, error) {
 	c, err := cache.Get()
 	if err != nil {
@@ -97,24 +113,36 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 }
 
 func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
-	var targetPod *v1.Pod
-	targetPods := []string{}
+	filteredPods := filterPodsWithLeastRequestCount(cache, readyPods)
+	if len(filteredPods) == 0 {
+		return nil
+	}
+	return filteredPods[rand.Intn(len(filteredPods))]
+}
+
+// filterPodsWithLeastRequestCount returns all candidate pods with the least running request count.
+// It can be used as the core logic of a future Filter() stage in a strategy chain.
+func filterPodsWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) []*v1.Pod {
+	if len(readyPods) == 0 {
+		return nil
+	}
 
 	minCount := math.MaxInt32
 	podRequestCount := getRequestCounts(cache, readyPods)
-	klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
-	for podname, totalReq := range podRequestCount {
+	klog.V(4).InfoS("filterPodsWithLeastRequestCount", "podRequestCount", podRequestCount)
+	for _, totalReq := range podRequestCount {
 		if totalReq < minCount {
 			minCount = totalReq
-			targetPods = []string{podname}
-		} else if totalReq == minCount {
-			targetPods = append(targetPods, podname)
 		}
 	}
-	if len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+
+	filtered := make([]*v1.Pod, 0, len(readyPods))
+	for _, pod := range readyPods {
+		if podRequestCount[pod.Name] == minCount {
+			filtered = append(filtered, pod)
+		}
 	}
-	return targetPod
+	return filtered
 }
 
 func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) (*v1.Pod, int) {

@@ -65,14 +65,39 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	}
 
 	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
-	routingAlgorithm, ok := routing.Validate(routingStrategy)
-	if routingStrategyEnabled && !ok {
-		klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", routingStrategy)
-		return generateErrorResponse(
-			envoyTypePb.StatusCode_BadRequest,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
-			}}}, "incorrect routing strategy", "", "routing-strategy"), utils.User{}, rpm, routingCtx
+	var routingAlgorithm types.RoutingAlgorithm
+	if routingStrategyEnabled && strings.Contains(routingStrategy, ",") {
+		// Strategy chain: validate each stage, but keep the raw chain string in ctx.Algorithm.
+		stages := strings.Split(routingStrategy, ",")
+		valid := true
+		for _, s := range stages {
+			if s == "" {
+				valid = false
+				break
+			}
+			if _, ok := routing.Validate(s); !ok {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			routingAlgorithm = types.RoutingAlgorithm(routingStrategy)
+		} else {
+			// Invalid chain: fallback to random and explain in debug log.
+			klog.V(4).InfoS("invalid routing strategy chain; fallback to random", "requestID", requestID, "routing-strategy", routingStrategy)
+			routingAlgorithm = routing.RouterRandom
+		}
+	} else {
+		var ok bool
+		routingAlgorithm, ok = routing.Validate(routingStrategy)
+		if routingStrategyEnabled && !ok {
+			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", routingStrategy)
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_BadRequest,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
+				}}}, "incorrect routing strategy", "", "routing-strategy"), utils.User{}, rpm, routingCtx
+		}
 	}
 
 	if username != "" {

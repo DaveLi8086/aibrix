@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +37,48 @@ var (
 	ErrFallbackNotSupported  = errors.New("router not support fallback")
 	ErrFallbackNotRegistered = errors.New("fallback router not registered")
 	defaultRM                = NewRouterManager()
+	chainRouterCache         sync.Map // map[string]types.Router
 )
+
+// FilterRouter defines the interface for routers that can filter pods.
+// Routers implementing this can be used as intermediate stages in a strategy chain.
+type FilterRouter interface {
+	Filter(ctx *types.RoutingContext, pods types.PodList) (types.PodList, error)
+}
+
+type strategyChainRouter struct {
+	chain   []string
+	routers []types.Router
+}
+
+func (r *strategyChainRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	if len(r.routers) == 0 {
+		ctx.Algorithm = RouterRandom
+		return RandomRouter.Route(ctx, pods)
+	}
+
+	original := pods
+	candidates := pods
+	for i := 0; i < len(r.routers)-1; i++ {
+		fr, ok := r.routers[i].(FilterRouter)
+		if !ok {
+			continue
+		}
+		filtered, err := fr.Filter(ctx, candidates)
+		if err != nil || filtered == nil || filtered.Len() == 0 {
+			klog.V(4).InfoS("strategy chain filter produced empty result; fallback to random",
+				"requestID", ctx.RequestID,
+				"chain", r.chain,
+				"stage", i,
+				"error", err)
+			ctx.Algorithm = RouterRandom
+			return RandomRouter.Route(ctx, original)
+		}
+		candidates = filtered
+	}
+
+	return r.routers[len(r.routers)-1].Route(ctx, candidates)
+}
 
 type RouterManager struct {
 	routerInited      context.Context
@@ -73,6 +115,11 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error) {
 	rm.routerMu.RLock()
 	defer rm.routerMu.RUnlock()
+
+	if strings.Contains(string(ctx.Algorithm), ",") {
+		return rm.selectStrategyChain(ctx)
+	}
+
 	if provider, ok := rm.routerFactory[ctx.Algorithm]; ok {
 		return provider(ctx)
 	} else {
@@ -146,6 +193,50 @@ func (rm *RouterManager) Init() {
 		klog.Infof("Registered router for %s", algorithm)
 	}
 	rm.routerDoneInit()
+}
+
+func (rm *RouterManager) selectStrategyChain(ctx *types.RoutingContext) (types.Router, error) {
+	key := string(ctx.Algorithm)
+	if v, ok := chainRouterCache.Load(key); ok {
+		return v.(types.Router), nil
+	}
+
+	parts := strings.Split(key, ",")
+	if len(parts) < 2 {
+		klog.V(4).InfoS("invalid routing strategy chain; fallback to random", "requestID", ctx.RequestID, "routing-strategy", key)
+		ctx.Algorithm = RouterRandom
+		return RandomRouter, nil
+	}
+
+	routers := make([]types.Router, 0, len(parts))
+	chain := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			klog.V(4).InfoS("empty routing strategy in chain; fallback to random", "requestID", ctx.RequestID, "routing-strategy", key)
+			ctx.Algorithm = RouterRandom
+			return RandomRouter, nil
+		}
+		provider, ok := rm.routerFactory[types.RoutingAlgorithm(p)]
+		if !ok || provider == nil {
+			klog.V(4).InfoS("unknown routing strategy in chain; fallback to random", "requestID", ctx.RequestID, "routing-strategy", key, "strategy", p)
+			ctx.Algorithm = RouterRandom
+			return RandomRouter, nil
+		}
+		tmp := *ctx
+		tmp.Algorithm = types.RoutingAlgorithm(p)
+		r, err := provider(&tmp)
+		if err != nil {
+			klog.V(4).InfoS("failed to build router in chain; fallback to random", "requestID", ctx.RequestID, "routing-strategy", key, "strategy", p, "error", err)
+			ctx.Algorithm = RouterRandom
+			return RandomRouter, nil
+		}
+		routers = append(routers, r)
+		chain = append(chain, p)
+	}
+
+	cr := &strategyChainRouter{chain: chain, routers: routers}
+	chainRouterCache.Store(key, cr)
+	return cr, nil
 }
 func Init() {
 	defaultRM.Init()

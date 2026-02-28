@@ -90,6 +90,56 @@ func Test_handleRequestHeaders(t *testing.T) {
 			},
 		},
 		{
+			name: "strategy chain - should return request info",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      pathKey,
+					RawValue: []byte("test-path"),
+				},
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("random,least-request"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{Algorithm: types.RoutingAlgorithm("random,least-request"), ReqPath: "test-path"},
+				user:       utils.User{},
+				rpm:        0,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
+				assert.NotNil(t, resp.GetRequestHeaders())
+				assert.Equal(t, tt.expected.user, user)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, types.RoutingAlgorithm("random,least-request"), routingCtx.Algorithm)
+				assert.Equal(t, "test-path", routingCtx.ReqPath)
+				assert.Equal(t, tt.expected.rpm, rpm)
+			},
+		},
+		{
+			name: "invalid strategy chain - should fallback to random",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("unknown,least-request"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				routingCtx: &types.RoutingContext{Algorithm: routingalgorithms.RouterRandom},
+				user:       utils.User{},
+				rpm:        0,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
+				assert.NotNil(t, resp.GetRequestHeaders())
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, routingalgorithms.RouterRandom, routingCtx.Algorithm)
+			},
+		},
+		{
 			name: "not found user in redis cache - should return error",
 			requestHeaders: []*configPb.HeaderValue{
 				{
