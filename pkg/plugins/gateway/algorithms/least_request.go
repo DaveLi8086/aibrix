@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -94,6 +95,57 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 	return []string{
 		metrics.RealtimeNumRequestsRunning,
 	}
+}
+
+// Reorder implements the Reorderer interface for multi-strategy routing.
+// It groups pods by their request count, with pods having fewer requests in higher priority groups.
+// Within each group, pods are sorted by request count (ascending).
+func (r *leastRequestRouter) Reorder(ctx *types.RoutingContext, podGroups routingalgorithms.PodGroups) routingalgorithms.PodGroups {
+	var allPods []*v1.Pod
+	
+	// Collect all pods from all groups
+	for _, group := range podGroups {
+		allPods = append(allPods, group...)
+	}
+	
+	if len(allPods) == 0 {
+		return routingalgorithms.PodGroups{}
+	}
+	
+	// Get request counts for all pods
+	podRequestCount := getRequestCounts(r.cache, allPods)
+	
+	// Group pods by request count
+	countToPods := make(map[int][]*v1.Pod)
+	for _, pod := range allPods {
+		count := podRequestCount[pod.Name]
+		countToPods[count] = append(countToPods[count], pod)
+	}
+	
+	// Get unique counts and sort them (ascending - fewer requests = higher priority)
+	var counts []int
+	for count := range countToPods {
+		counts = append(counts, count)
+	}
+	sort.Ints(counts)
+	
+	// Build new pod groups - each unique count becomes a group
+	var result routingalgorithms.PodGroups
+	for _, count := range counts {
+		pods := countToPods[count]
+		if len(pods) > 0 {
+			result = append(result, pods)
+		}
+	}
+	
+	klog.V(4).InfoS("least-request reorder completed",
+		"requestID", ctx.RequestID,
+		"inputGroups", len(podGroups),
+		"outputGroups", len(result),
+		"totalPods", len(allPods),
+	)
+	
+	return result
 }
 
 func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {

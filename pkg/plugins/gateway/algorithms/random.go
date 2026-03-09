@@ -22,6 +22,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
 )
 
 const RouterRandom types.RoutingAlgorithm = "random"
@@ -54,6 +55,16 @@ func (r randomRouter) Route(ctx *types.RoutingContext, readyPodList types.PodLis
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+// Reorder implements the Reorderer interface for multi-strategy routing.
+// For random router, it simply returns the input unchanged (no specific ordering).
+func (r randomRouter) Reorder(ctx *types.RoutingContext, podGroups routingalgorithms.PodGroups) routingalgorithms.PodGroups {
+	klog.V(4).InfoS("random reorder (noop)",
+		"requestID", ctx.RequestID,
+		"groups", len(podGroups),
+	)
+	return podGroups
 }
 
 func (r *randomRouter) SubscribedMetrics() []string {

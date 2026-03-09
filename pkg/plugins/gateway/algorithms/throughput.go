@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"math"
 	"math/rand"
+	"sort"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -90,9 +91,113 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, readyPodList types.Po
 	return ctx.TargetAddress(), nil
 }
 
-func (r *throughputRouter) SubscribedMetrics() []string {
+func (r throughputRouter) SubscribedMetrics() []string {
 	return []string{
 		metrics.AvgPromptThroughputToksPerS,
 		metrics.AvgGenerationThroughputToksPerS,
 	}
+}
+
+// Reorder implements the Reorderer interface for multi-strategy routing.
+// It groups pods by throughput ranges, with higher throughput pods in higher priority groups.
+// Within each group, pods are sorted by throughput (descending).
+func (r throughputRouter) Reorder(ctx *types.RoutingContext, podGroups routingalgorithms.PodGroups) routingalgorithms.PodGroups {
+	var allPods []*v1.Pod
+	
+	// Collect all pods from all groups
+	for _, group := range podGroups {
+		allPods = append(allPods, group...)
+	}
+	
+	if len(allPods) == 0 {
+		return routingalgorithms.PodGroups{}
+	}
+	
+	// Get throughput metrics for all pods
+	type podThroughput struct {
+		pod       *v1.Pod
+		throughput float64
+	}
+	
+	var podThroughputs []podThroughput
+	for _, pod := range allPods {
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptThroughputToksPerS)
+		if err != nil {
+			klog.V(4).InfoS("failed to get prompt throughput for pod", "pod", pod.Name, "error", err)
+			continue
+		}
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
+		if err != nil {
+			klog.V(4).InfoS("failed to get generation throughput for pod", "pod", pod.Name, "error", err)
+			continue
+		}
+		
+		// processing prompt tokens is twice as expensive than generation tokens
+		totalThroughput := 2*promptThroughput.GetSimpleValue() + generationThroughput.GetSimpleValue()
+		
+		podThroughputs = append(podThroughputs, podThroughput{
+			pod:        pod,
+			throughput: totalThroughput,
+		})
+	}
+	
+	if len(podThroughputs) == 0 {
+		return routingalgorithms.PodGroups{allPods}
+	}
+	
+	// Group by throughput ranges (higher throughput = higher priority)
+	// For simplicity, we'll create groups based on throughput quartiles
+	var throughputs []float64
+	for _, pt := range podThroughputs {
+		throughputs = append(throughputs, pt.throughput)
+	}
+	sort.Float64s(throughputs)
+	
+	// Create throughput ranges (descending order for higher priority)
+	var ranges []struct {
+		min, max float64
+	}
+	
+	if len(throughputs) > 0 {
+		maxThroughput := throughputs[len(throughputs)-1]
+		minThroughput := throughputs[0]
+		rangeSize := (maxThroughput - minThroughput) / 4 // 4 groups
+		
+		for i := 3; i >= 0; i-- {
+			min := minThroughput + float64(i)*rangeSize
+			max := minThroughput + float64(i+1)*rangeSize
+			if i == 3 {
+				max = maxThroughput + 1 // Ensure max value is included
+			}
+			ranges = append(ranges, struct{ min, max float64 }{min, max})
+		}
+	}
+	
+	// Assign pods to groups based on throughput ranges
+	var result routingalgorithms.PodGroups
+	for _, r := range ranges {
+		var group []*v1.Pod
+		for _, pt := range podThroughputs {
+			if pt.throughput >= r.min && pt.throughput < r.max {
+				group = append(group, pt.pod)
+			}
+		}
+		if len(group) > 0 {
+			result = append(result, group)
+		}
+	}
+	
+	// If no groups were created, return all pods in a single group
+	if len(result) == 0 {
+		result = routingalgorithms.PodGroups{allPods}
+	}
+	
+	klog.V(4).InfoS("throughput reorder completed",
+		"requestID", ctx.RequestID,
+		"inputGroups", len(podGroups),
+		"outputGroups", len(result),
+		"totalPods", len(allPods),
+	)
+	
+	return result
 }
